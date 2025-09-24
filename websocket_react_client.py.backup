@@ -2,7 +2,6 @@
 import tkinter as tk
 from tkinter import ttk, scrolledtext, messagebox
 import websocket
-import ssl
 import threading
 import json
 import time
@@ -11,21 +10,18 @@ from datetime import datetime
 class WebSocketReactClient:
     def __init__(self, root):
         self.root = root
-        self.root.title("WebSocket React Client - sibl.online")
+        self.root.title("WebSocket React Client - Port 8000")
         self.root.geometry("900x900")
         
         # WebSocket connection
         self.ws = None
         self.connected = False
         self.connection_thread = None
-        self.server_url = "wss://sibl.online/ws"
+        self.server_url = "ws://localhost:8000"
         self.connection_verified = False
         self.connected_robots = []
         self.last_message = None
         self.error = None
-        
-        # SSL settings
-        self.skip_ssl_verification = tk.BooleanVar(value=True)  # Default to True for development
         
         # Reconnection settings (matching React hook)
         self.reconnect_attempts = 0
@@ -71,29 +67,30 @@ class WebSocketReactClient:
         conn_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
         conn_frame.columnconfigure(1, weight=1)
         
-        # WebSocket URL input (single field for the full URL)
-        ttk.Label(conn_frame, text="WebSocket URL:").grid(row=0, column=0, sticky=tk.W, padx=(0, 10), pady=(0, 5))
-        self.url_var = tk.StringVar(value="wss://sibl.online/ws")
-        self.url_entry = ttk.Entry(conn_frame, textvariable=self.url_var, width=50)
-        self.url_entry.grid(row=0, column=1, sticky=(tk.W, tk.E), pady=(0, 5))
+        # Server IP input
+        ttk.Label(conn_frame, text="Server IP:").grid(row=0, column=0, sticky=tk.W, padx=(0, 10), pady=(0, 5))
+        self.ip_var = tk.StringVar(value="localhost")
+        self.ip_entry = ttk.Entry(conn_frame, textvariable=self.ip_var, width=20)
+        self.ip_entry.grid(row=0, column=1, sticky=tk.W, pady=(0, 5))
         
-        # Update server URL when URL changes
-        self.url_var.trace('w', self.update_server_url)
+        # Port input
+        ttk.Label(conn_frame, text="Port:").grid(row=0, column=2, sticky=tk.W, padx=(20, 10), pady=(0, 5))
+        self.port_var = tk.StringVar(value="8000")
+        self.port_entry = ttk.Entry(conn_frame, textvariable=self.port_var, width=10)
+        self.port_entry.grid(row=0, column=3, sticky=tk.W, pady=(0, 5))
         
-        # SSL verification checkbox
-        ssl_frame = ttk.Frame(conn_frame)
-        ssl_frame.grid(row=1, column=0, columnspan=2, pady=(5, 0))
+        # Full URL display
+        ttk.Label(conn_frame, text="WebSocket URL:").grid(row=1, column=0, sticky=tk.W, padx=(0, 10), pady=(5, 0))
+        self.url_label = ttk.Label(conn_frame, text="ws://localhost:8000", foreground="blue", font=("Arial", 10, "bold"))
+        self.url_label.grid(row=1, column=1, columnspan=3, sticky=tk.W, pady=(5, 0))
         
-        self.ssl_checkbox = ttk.Checkbutton(
-            ssl_frame, 
-            text="Skip SSL Certificate Verification (for development)", 
-            variable=self.skip_ssl_verification
-        )
-        self.ssl_checkbox.pack(side=tk.LEFT)
+        # Update URL when IP or port changes
+        self.ip_var.trace('w', self.update_url)
+        self.port_var.trace('w', self.update_url)
         
         # Connection status
         status_frame = ttk.Frame(conn_frame)
-        status_frame.grid(row=2, column=0, columnspan=2, pady=(10, 0))
+        status_frame.grid(row=2, column=0, columnspan=4, pady=(10, 0))
         
         self.connect_btn = ttk.Button(status_frame, text="Connect", command=self.connect)
         self.connect_btn.pack(side=tk.LEFT, padx=(0, 10))
@@ -109,22 +106,31 @@ class WebSocketReactClient:
         self.error_label = ttk.Label(status_frame, text="", foreground="red")
         self.error_label.pack(side=tk.LEFT, padx=(20, 0))
         
-        # Quick URL buttons
-        quick_url_frame = ttk.Frame(conn_frame)
-        quick_url_frame.grid(row=3, column=0, columnspan=2, pady=(10, 0))
+        # Quick IP buttons
+        quick_ip_frame = ttk.Frame(conn_frame)
+        quick_ip_frame.grid(row=3, column=0, columnspan=4, pady=(10, 0))
         
-        ttk.Label(quick_url_frame, text="Quick URLs:").pack(side=tk.LEFT, padx=(0, 10))
-        ttk.Button(quick_url_frame, text="sibl.online (WSS)", command=lambda: self.set_url("wss://sibl.online/ws")).pack(side=tk.LEFT, padx=(0, 5))
-        ttk.Button(quick_url_frame, text="Localhost (WS)", command=lambda: self.set_url("ws://localhost:8000")).pack(side=tk.LEFT, padx=(0, 5))
-        ttk.Button(quick_url_frame, text="Localhost 3000", command=lambda: self.set_url("ws://localhost:3000")).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Label(quick_ip_frame, text="Quick IPs:").pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(quick_ip_frame, text="Localhost", command=lambda: self.set_server("localhost", "8000")).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(quick_ip_frame, text="192.168.1.100", command=lambda: self.set_server("192.168.1.100", "8000")).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(quick_ip_frame, text="10.0.0.1", command=lambda: self.set_server("10.0.0.1", "8000")).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(quick_ip_frame, text="Custom Port 3000", command=lambda: self.set_server("localhost", "3000")).pack(side=tk.LEFT, padx=(0, 5))
         
-    def update_server_url(self, *args):
-        """Update the server URL when URL field changes"""
-        self.server_url = self.url_var.get().strip()
+    def update_url(self, *args):
+        """Update the WebSocket URL when IP or port changes"""
+        ip = self.ip_var.get().strip()
+        port = self.port_var.get().strip()
+        
+        if ip and port:
+            self.server_url = f"ws://{ip}:{port}"
+            self.url_label.config(text=self.server_url)
+        else:
+            self.url_label.config(text="Invalid IP/Port")
             
-    def set_url(self, url):
-        """Set WebSocket URL"""
-        self.url_var.set(url)
+    def set_server(self, ip, port):
+        """Set server IP and port"""
+        self.ip_var.set(ip)
+        self.port_var.set(port)
         
     def setup_send_data_frame(self, parent):
         send_frame = ttk.LabelFrame(parent, text="Send Location Data", padding="10")
@@ -469,7 +475,7 @@ class WebSocketReactClient:
     def connect(self):
         """Connect to WebSocket server (matching React hook behavior)"""
         # Update server URL before connecting
-        self.update_server_url()
+        self.update_url()
         
         self.log_message("DIAGNOSTIC", f"🔍 Connecting to: {self.server_url}")
         self.log_message("INFO", "📡 Starting WebSocket connection (React hook behavior)...")
@@ -477,17 +483,6 @@ class WebSocketReactClient:
         self.log_message("INFO", "📱 Will receive broadcasted messages from the server")
         
         try:
-            # Create SSL context for WSS connections
-            ssl_context = None
-            if self.server_url.startswith('wss://'):
-                ssl_context = ssl.create_default_context()
-                if self.skip_ssl_verification.get():
-                    self.log_message("WARNING", "⚠️ SSL certificate verification disabled (development mode)")
-                    ssl_context.check_hostname = False
-                    ssl_context.verify_mode = ssl.CERT_NONE
-                else:
-                    self.log_message("INFO", "🔒 SSL certificate verification enabled")
-            
             # Create WebSocket connection
             self.ws = websocket.WebSocketApp(
                 self.server_url,
@@ -497,10 +492,8 @@ class WebSocketReactClient:
                 on_close=self.on_close
             )
             
-            # Start connection in a separate thread with SSL context
-            self.connection_thread = threading.Thread(
-                target=lambda: self.ws.run_forever(sslopt={"context": ssl_context} if ssl_context else {})
-            )
+            # Start connection in a separate thread
+            self.connection_thread = threading.Thread(target=self.ws.run_forever)
             self.connection_thread.daemon = True
             self.connection_thread.start()
             
@@ -523,7 +516,7 @@ class WebSocketReactClient:
         self.reconnect_attempts = 0
         self.root.after(0, self.update_connection_ui)
         self.root.after(0, lambda: self.log_message("CONNECTED", f"🔗 WebSocket connected to {self.server_url}"))
-        self.root.after(0, lambda: self.log_message("INFO", "🌐 Connected as web client (like React hook)"))
+        self.root.after(0, lambda: self.log_message("INFO", "�� Connected as web client (like React hook)"))
         self.root.after(0, lambda: self.log_message("INFO", "👂 Listening for broadcasted messages..."))
         
     def on_message(self, ws, event_data):
