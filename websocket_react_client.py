@@ -6,6 +6,7 @@ import ssl
 import threading
 import json
 import time
+import math
 from datetime import datetime
 
 class WebSocketReactClient:
@@ -20,9 +21,14 @@ class WebSocketReactClient:
         self.connection_thread = None
         self.server_url = "wss://sibl.online/ws"
         self.connection_verified = False
-        self.connected_robots = []
         self.last_message = None
         self.error = None
+        
+        # Direction tracking
+        self.last_lat = None
+        self.last_lng = None
+        self.current_direction = 0  # Direction in degrees (0 = North, 90 = East, etc.)
+        self.manual_direction_set = False  # Flag to track if direction was manually set
         
         # SSL settings
         self.skip_ssl_verification = tk.BooleanVar(value=True)  # Default to True for development
@@ -57,11 +63,11 @@ class WebSocketReactClient:
         # Send data frame
         self.setup_send_data_frame(main_frame)
         
+        # Direction indicator frame
+        self.setup_direction_frame(main_frame)
+        
         # Auto-increment frame
         self.setup_auto_increment_frame(main_frame)
-        
-        # Connected robots frame
-        self.setup_robots_frame(main_frame)
         
         # Messages log frame
         self.setup_messages_log_frame(main_frame)
@@ -159,6 +165,10 @@ class WebSocketReactClient:
         self.send_ping_btn = ttk.Button(buttons_frame, text="Send Ping", command=self.send_ping, state=tk.DISABLED)
         self.send_ping_btn.pack(side=tk.LEFT, padx=(0, 10))
         
+        # Send route waypoints button
+        self.send_route_btn = ttk.Button(buttons_frame, text="Send Route", command=self.send_route_waypoints, state=tk.DISABLED)
+        self.send_route_btn.pack(side=tk.LEFT, padx=(0, 10))
+        
         # Quick location buttons
         quick_frame = ttk.Frame(send_frame)
         quick_frame.grid(row=3, column=0, columnspan=2, pady=(10, 0))
@@ -169,9 +179,46 @@ class WebSocketReactClient:
         ttk.Button(quick_frame, text="London", command=lambda: self.set_location(51.5074, -0.1278)).pack(side=tk.LEFT, padx=(0, 5))
         ttk.Button(quick_frame, text="Tokyo", command=lambda: self.set_location(35.6762, 139.6503)).pack(side=tk.LEFT, padx=(0, 5))
         
+    def setup_direction_frame(self, parent):
+        """Setup direction indicator frame"""
+        direction_frame = ttk.LabelFrame(parent, text="Direction Indicator", padding="10")
+        direction_frame.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        direction_frame.columnconfigure(1, weight=1)
+        
+        # Direction display
+        ttk.Label(direction_frame, text="Direction:").grid(row=0, column=0, sticky=tk.W, padx=(0, 10), pady=(0, 5))
+        
+        # Canvas for triangular direction indicator
+        self.direction_canvas = tk.Canvas(direction_frame, width=100, height=100, bg="white", relief="sunken", bd=2)
+        self.direction_canvas.grid(row=0, column=1, sticky=tk.W, pady=(0, 5))
+        
+        # Direction text display
+        self.direction_label = ttk.Label(direction_frame, text="0° (North)", font=("Arial", 12, "bold"))
+        self.direction_label.grid(row=0, column=2, sticky=tk.W, padx=(10, 0), pady=(0, 5))
+        
+        # Direction mode indicator
+        self.direction_mode_label = ttk.Label(direction_frame, text="Auto", foreground="blue", font=("Arial", 10))
+        self.direction_mode_label.grid(row=0, column=3, sticky=tk.W, padx=(10, 0), pady=(0, 5))
+        
+        # Direction controls
+        controls_frame = ttk.Frame(direction_frame)
+        controls_frame.grid(row=1, column=0, columnspan=4, pady=(10, 0))
+        
+        ttk.Label(controls_frame, text="Manual Direction:").pack(side=tk.LEFT, padx=(0, 10))
+        self.manual_direction_var = tk.StringVar(value="0")
+        direction_entry = ttk.Entry(controls_frame, textvariable=self.manual_direction_var, width=10)
+        direction_entry.pack(side=tk.LEFT, padx=(0, 10))
+        
+        ttk.Button(controls_frame, text="Set Direction", command=self.set_manual_direction).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(controls_frame, text="Reset", command=self.reset_direction).pack(side=tk.LEFT, padx=(0, 10))
+        
+        # Initialize direction indicator
+        self.update_direction_indicator()
+        self.update_direction_label()
+        
     def setup_auto_increment_frame(self, parent):
         auto_frame = ttk.LabelFrame(parent, text="Auto-Increment Latitude (Hold to Move North)", padding="10")
-        auto_frame.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        auto_frame.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
         auto_frame.columnconfigure(1, weight=1)
         
         # Settings frame
@@ -210,20 +257,6 @@ class WebSocketReactClient:
         self.hold_btn.bind("<Button-1>", self.on_hold_start)
         self.hold_btn.bind("<ButtonRelease-1>", self.on_hold_stop)
         
-    def setup_robots_frame(self, parent):
-        robots_frame = ttk.LabelFrame(parent, text="Connected Robots (React State)", padding="10")
-        robots_frame.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
-        robots_frame.columnconfigure(0, weight=1)
-        
-        # Robots list
-        self.robots_text = tk.Text(robots_frame, height=3, state=tk.DISABLED, wrap=tk.WORD)
-        self.robots_text.grid(row=0, column=0, sticky=(tk.W, tk.E))
-        
-        # Scrollbar for robots
-        robots_scrollbar = ttk.Scrollbar(robots_frame, orient=tk.VERTICAL, command=self.robots_text.yview)
-        robots_scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
-        self.robots_text.config(yscrollcommand=robots_scrollbar.set)
-        
     def setup_messages_log_frame(self, parent):
         log_frame = ttk.LabelFrame(parent, text="WebSocket Messages (React Hook Behavior)", padding="10")
         log_frame.grid(row=4, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
@@ -246,6 +279,109 @@ class WebSocketReactClient:
         self.message_count_label.pack(side=tk.RIGHT)
         
         self.message_count = 0
+        
+    def calculate_direction(self, lat1, lng1, lat2, lng2):
+        """Calculate direction between two points in degrees (0 = North, 90 = East)"""
+        if lat1 is None or lng1 is None or lat2 is None or lng2 is None:
+            return self.current_direction
+            
+        # Convert to radians
+        lat1_rad = math.radians(lat1)
+        lat2_rad = math.radians(lat2)
+        delta_lng = math.radians(lng2 - lng1)
+        
+        # Calculate bearing
+        y = math.sin(delta_lng) * math.cos(lat2_rad)
+        x = math.cos(lat1_rad) * math.sin(lat2_rad) - math.sin(lat1_rad) * math.cos(lat2_rad) * math.cos(delta_lng)
+        
+        bearing = math.atan2(y, x)
+        bearing_degrees = math.degrees(bearing)
+        
+        # Normalize to 0-360 degrees
+        bearing_degrees = (bearing_degrees + 360) % 360
+        
+        return bearing_degrees
+        
+    def update_direction_indicator(self):
+        """Update the triangular direction indicator on canvas"""
+        self.direction_canvas.delete("all")
+        
+        # Canvas center
+        center_x, center_y = 50, 50
+        
+        # Triangle size
+        triangle_size = 25
+        
+        # Convert direction to radians (0 degrees = North, but canvas 0 degrees = East)
+        # So we need to adjust: canvas_angle = (direction - 90) % 360
+        canvas_angle = math.radians((self.current_direction - 90) % 360)
+        
+        # Draw center pin first (larger and more prominent)
+        pin_size = 6
+        self.direction_canvas.create_oval(center_x-pin_size, center_y-pin_size, center_x+pin_size, center_y+pin_size, fill="black", outline="darkgray", width=2)
+        
+        # Calculate triangle points starting from the center pin
+        # Point 1: front of triangle (pointing in direction) - starts from center
+        x1 = center_x + triangle_size * math.cos(canvas_angle)
+        y1 = center_y + triangle_size * math.sin(canvas_angle)
+        
+        # Point 2: back left of triangle - starts from center
+        x2 = center_x + (triangle_size * 0.7) * math.cos(canvas_angle + math.radians(120))
+        y2 = center_y + (triangle_size * 0.7) * math.sin(canvas_angle + math.radians(120))
+        
+        # Point 3: back right of triangle - starts from center
+        x3 = center_x + (triangle_size * 0.7) * math.cos(canvas_angle - math.radians(120))
+        y3 = center_y + (triangle_size * 0.7) * math.sin(canvas_angle - math.radians(120))
+        
+        # Draw triangle starting from center pin
+        self.direction_canvas.create_polygon(center_x, center_y, x1, y1, x2, y2, x3, y3, fill="red", outline="darkred", width=2)
+        
+        # Draw compass directions
+        self.direction_canvas.create_text(50, 10, text="N", font=("Arial", 10, "bold"))
+        self.direction_canvas.create_text(90, 50, text="E", font=("Arial", 10, "bold"))
+        self.direction_canvas.create_text(50, 90, text="S", font=("Arial", 10, "bold"))
+        self.direction_canvas.create_text(10, 50, text="W", font=("Arial", 10, "bold"))
+        
+    def set_manual_direction(self):
+        """Set direction manually from input field"""
+        try:
+            direction = float(self.manual_direction_var.get())
+            self.current_direction = direction % 360
+            self.manual_direction_set = True  # Mark as manually set
+            self.update_direction_indicator()
+            self.update_direction_label()
+            self.log_message("INFO", f"🧭 Direction manually set to {self.current_direction:.1f}° (will not auto-calculate)")
+        except ValueError:
+            messagebox.showerror("Invalid Input", "Please enter a valid number for direction")
+            
+    def reset_direction(self):
+        """Reset direction to 0 (North)"""
+        self.current_direction = 0
+        self.manual_direction_set = False  # Reset manual flag
+        self.last_lat = None
+        self.last_lng = None
+        self.update_direction_indicator()
+        self.update_direction_label()
+        self.log_message("INFO", "🧭 Direction reset to North (0°) - auto-calculation enabled")
+        
+    def update_direction_label(self):
+        """Update the direction text label and mode indicator"""
+        direction_names = {
+            0: "North", 45: "Northeast", 90: "East", 135: "Southeast",
+            180: "South", 225: "Southwest", 270: "West", 315: "Northwest"
+        }
+        
+        # Find closest cardinal direction
+        closest_direction = min(direction_names.keys(), key=lambda x: abs(x - self.current_direction))
+        direction_name = direction_names[closest_direction]
+        
+        self.direction_label.config(text=f"{self.current_direction:.1f}° ({direction_name})")
+        
+        # Update mode indicator
+        if self.manual_direction_set:
+            self.direction_mode_label.config(text="Manual", foreground="red")
+        else:
+            self.direction_mode_label.config(text="Auto", foreground="blue")
         
     def on_hold_start(self, event):
         """Start auto-increment when button is pressed"""
@@ -329,11 +465,19 @@ class WebSocketReactClient:
             lat = float(self.lat_var.get())
             lng = float(self.lng_var.get())
             
+            # Calculate direction only if not manually set and we have previous location
+            if not self.manual_direction_set and self.last_lat is not None and self.last_lng is not None:
+                new_direction = self.calculate_direction(self.last_lat, self.last_lng, lat, lng)
+                self.current_direction = new_direction
+                self.root.after(0, self.update_direction_indicator)
+                self.root.after(0, self.update_direction_label)
+            
             location_message = {
                 "type": "location",
                 "data": {
                     "lat": lat,
                     "lng": lng,
+                    "direction": self.current_direction,
                     "timestamp": datetime.now().isoformat() + "Z"
                 }
             }
@@ -341,15 +485,32 @@ class WebSocketReactClient:
             if self.ws and self.connected:
                 self.ws.send(json.dumps(location_message))
                 
+            # Store current location for next direction calculation
+            self.last_lat = lat
+            self.last_lng = lng
+                
         except ValueError:
             pass  # Silently handle invalid values during auto-increment
         except Exception as e:
             self.root.after(0, lambda: self.log_message("ERROR", f"❌ Auto-send error: {e}"))
         
     def set_location(self, lat, lng):
-        """Set latitude and longitude values"""
+        """Set latitude and longitude values and calculate direction"""
+        # Calculate direction only if not manually set and we have previous location
+        if not self.manual_direction_set and self.last_lat is not None and self.last_lng is not None:
+            new_direction = self.calculate_direction(self.last_lat, self.last_lng, lat, lng)
+            self.current_direction = new_direction
+            self.update_direction_indicator()
+            self.update_direction_label()
+            self.log_message("INFO", f"🧭 Direction auto-calculated: {self.current_direction:.1f}°")
+        
+        # Update location
         self.lat_var.set(str(lat))
         self.lng_var.set(str(lng))
+        
+        # Store current location for next direction calculation
+        self.last_lat = lat
+        self.last_lng = lng
         
     def send_location(self):
         """Send location data to WebSocket server"""
@@ -357,17 +518,31 @@ class WebSocketReactClient:
             lat = float(self.lat_var.get())
             lng = float(self.lng_var.get())
             
+            # Calculate direction only if not manually set and we have previous location
+            if not self.manual_direction_set and self.last_lat is not None and self.last_lng is not None:
+                new_direction = self.calculate_direction(self.last_lat, self.last_lng, lat, lng)
+                self.current_direction = new_direction
+                self.update_direction_indicator()
+                self.update_direction_label()
+                self.log_message("INFO", f"🧭 Direction auto-calculated: {self.current_direction:.1f}°")
+            
             location_message = {
                 "type": "location",
                 "data": {
                     "lat": lat,
                     "lng": lng,
+                    "direction": self.current_direction,
                     "timestamp": datetime.now().isoformat() + "Z"
                 }
             }
             
             self.send_message(location_message)
-            self.log_message("SENT", f"📍 Sent location: {lat}, {lng}")
+            direction_source = "manual" if self.manual_direction_set else "auto-calculated"
+            self.log_message("SENT", f"📍 Sent location: {lat}, {lng} (direction: {self.current_direction:.1f}° - {direction_source})")
+            
+            # Store current location for next direction calculation
+            self.last_lat = lat
+            self.last_lng = lng
             
         except ValueError:
             messagebox.showerror("Invalid Input", "Please enter valid latitude and longitude numbers")
@@ -397,6 +572,37 @@ class WebSocketReactClient:
         self.send_message(ping_message)
         self.log_message("SENT", f"🏓 Sent ping")
         
+    def send_route_waypoints(self):
+        """Send route waypoints to WebSocket server"""
+        route_message = {
+            "type": "route_waypoints",
+            "action": "send_route",
+            "data": {
+                "waypoints": [
+                    { "lat": 37.7749, "lng": -122.4194 },
+                    { "lat": 37.7755, "lng": -122.4200 },
+                    { "lat": 37.7760, "lng": -122.4190 },
+                    { "lat": 37.7750, "lng": -122.4180 },
+                    { "lat": 37.7740, "lng": -122.4185 },
+                    { "lat": 37.7735, "lng": -122.4195 },
+                    { "lat": 37.7745, "lng": -122.4205 },
+                    { "lat": 37.7755, "lng": -122.4210 },
+                    { "lat": 37.7765, "lng": -122.4205 },
+                    { "lat": 37.7770, "lng": -122.4195 }
+                ],
+                "routeName": "Robot Generated Route",
+                "routeType": "delivery",
+                "totalStops": 10,
+                "startLocation": "Warehouse",
+                "endLocation": "Final Destination"
+            },
+            "timestamp": datetime.now().isoformat() + "Z",
+            "source": "robot"
+        }
+        
+        self.send_message(route_message)
+        self.log_message("SENT", f"🗺️ Sent route waypoints (10 stops)")
+        
     def send_message(self, message):
         """Send message to WebSocket server"""
         if self.ws and self.connected:
@@ -422,9 +628,6 @@ class WebSocketReactClient:
             "CONNECTED": "darkgreen",
             "DISCONNECTED": "red",
             "RECEIVED": "green",
-            "CONNECTED_ROBOTS": "darkcyan",
-            "ROBOT_CONNECTED": "darkgreen",
-            "ROBOT_DISCONNECTED": "red",
             "ROBOT_LOCATION": "green",
             "ROBOT_STATUS": "darkgreen",
             "SENT": "blue",
@@ -451,20 +654,6 @@ class WebSocketReactClient:
         self.message_count += 1
         self.message_count_label.config(text=f"Messages: {self.message_count}")
         
-    def update_robots_display(self):
-        """Update the connected robots display (matching React state)"""
-        self.robots_text.config(state=tk.NORMAL)
-        self.robots_text.delete(1.0, tk.END)
-        
-        if self.connected_robots:
-            robots_text = f"Connected Robots ({len(self.connected_robots)}):\n"
-            for i, robot_id in enumerate(self.connected_robots, 1):
-                robots_text += f"{i}. {robot_id}\n"
-        else:
-            robots_text = "No robots connected"
-            
-        self.robots_text.insert(1.0, robots_text)
-        self.robots_text.config(state=tk.DISABLED)
         
     def connect(self):
         """Connect to WebSocket server (matching React hook behavior)"""
@@ -539,27 +728,7 @@ class WebSocketReactClient:
             # Handle different message types (matching React hook switch statement)
             msg_type = message.get('type', 'unknown')
             
-            if msg_type == 'connected_robots':
-                if message.get('robots'):
-                    self.connected_robots = message['robots']
-                    self.root.after(0, lambda: self.log_message("CONNECTED_ROBOTS", f"🤖 Connected robots updated: {len(self.connected_robots)} robots"))
-                    self.root.after(0, self.update_robots_display)
-                    
-            elif msg_type == 'robot_connected':
-                robot_id = message.get('robotId', '')
-                if robot_id and robot_id not in self.connected_robots:
-                    self.connected_robots.append(robot_id)
-                    self.root.after(0, lambda: self.log_message("ROBOT_CONNECTED", f"🤖 New robot connected: {robot_id}"))
-                    self.root.after(0, self.update_robots_display)
-                    
-            elif msg_type == 'robot_disconnected':
-                robot_id = message.get('robotId', '')
-                if robot_id in self.connected_robots:
-                    self.connected_robots.remove(robot_id)
-                    self.root.after(0, lambda: self.log_message("ROBOT_DISCONNECTED", f"❌ Robot disconnected: {robot_id}"))
-                    self.root.after(0, self.update_robots_display)
-                    
-            elif msg_type == 'robot_location':
+            if msg_type == 'robot_location':
                 robot_id = message.get('robotId', 'unknown')
                 data = message.get('data', {})
                 self.root.after(0, lambda: self.log_message("ROBOT_LOCATION", f"📍 Robot {robot_id} location: {json.dumps(data, indent=2)}"))
@@ -614,6 +783,7 @@ class WebSocketReactClient:
             self.send_location_btn.config(state=tk.NORMAL)
             self.send_status_btn.config(state=tk.NORMAL)
             self.send_ping_btn.config(state=tk.NORMAL)
+            self.send_route_btn.config(state=tk.NORMAL)
             self.hold_btn.config(state=tk.NORMAL)
         else:
             self.status_label.config(text="Not Connected", foreground="red")
@@ -623,6 +793,7 @@ class WebSocketReactClient:
             self.send_location_btn.config(state=tk.DISABLED)
             self.send_status_btn.config(state=tk.DISABLED)
             self.send_ping_btn.config(state=tk.DISABLED)
+            self.send_route_btn.config(state=tk.DISABLED)
             self.hold_btn.config(state=tk.DISABLED)
             # Stop auto-increment if running
             self.stop_auto_increment()
