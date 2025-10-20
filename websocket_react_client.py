@@ -169,6 +169,10 @@ class WebSocketReactClient:
         self.send_route_btn = ttk.Button(buttons_frame, text="Send Route", command=self.send_route_waypoints, state=tk.DISABLED)
         self.send_route_btn.pack(side=tk.LEFT, padx=(0, 10))
         
+        # Send location update button
+        self.send_location_update_btn = ttk.Button(buttons_frame, text="Send Location Update", command=self.send_location_update, state=tk.DISABLED)
+        self.send_location_update_btn.pack(side=tk.LEFT, padx=(0, 10))
+        
         # Quick location buttons
         quick_frame = ttk.Frame(send_frame)
         quick_frame.grid(row=3, column=0, columnspan=2, pady=(10, 0))
@@ -603,6 +607,42 @@ class WebSocketReactClient:
         self.send_message(route_message)
         self.log_message("SENT", f"🗺️ Sent route waypoints (10 stops)")
         
+    def send_location_update(self):
+        """Send location update in the specified format"""
+        try:
+            lat = float(self.lat_var.get())
+            lng = float(self.lng_var.get())
+            
+            # Calculate direction only if not manually set and we have previous location
+            if not self.manual_direction_set and self.last_lat is not None and self.last_lng is not None:
+                new_direction = self.calculate_direction(self.last_lat, self.last_lng, lat, lng)
+                self.current_direction = new_direction
+                self.update_direction_indicator()
+                self.update_direction_label()
+                self.log_message("INFO", f"🧭 Direction auto-calculated: {self.current_direction:.1f}°")
+            
+            # Create location update message in the specified format
+            location_update_message = {
+                "type": "location_track",
+                "data": {
+                    "lat": lat,
+                    "lng": lng,
+                    "timestamp": datetime.now().isoformat() + "Z",
+                    "direction": self.current_direction
+                }
+            }
+            
+            self.send_message(location_update_message)
+            direction_source = "manual" if self.manual_direction_set else "auto-calculated"
+            self.log_message("SENT", f"📍 Sent location update: {lat}, {lng} (direction: {self.current_direction:.1f}° - {direction_source})")
+            
+            # Store current location for next direction calculation
+            self.last_lat = lat
+            self.last_lng = lng
+            
+        except ValueError:
+            messagebox.showerror("Invalid Input", "Please enter valid latitude and longitude numbers")
+        
     def send_message(self, message):
         """Send message to WebSocket server"""
         if self.ws and self.connected:
@@ -732,14 +772,14 @@ class WebSocketReactClient:
                 robot_id = message.get('robotId', 'unknown')
                 data = message.get('data', {})
                 self.root.after(0, lambda: self.log_message("ROBOT_LOCATION", f"📍 Robot {robot_id} location: {json.dumps(data, indent=2)}"))
-                
             elif msg_type == 'robot_status':
                 robot_id = message.get('robotId', 'unknown')
                 data = message.get('data', {})
-                self.root.after(0, lambda: self.log_message("ROBOT_STATUS", f"📊 Robot {robot_id} status: {json.dumps(data, indent=2)}"))
-                
+                self.root.after(0, lambda: self.log_message("ROBOT_STATUS", f"📊 Robot {robot_id} status: {json.dumps(data, indent=2)}"))  
             else:
                 self.root.after(0, lambda: self.log_message("INFO", f"📨 Other message type '{msg_type}': {json.dumps(message, indent=2)}"))
+                if message.get('command') == 'sendlocation':
+                    self.send_location()
                 
         except json.JSONDecodeError as err:
             self.root.after(0, lambda: self.log_message("ERROR", f"❌ Error parsing WebSocket message: {err}"))
@@ -784,6 +824,7 @@ class WebSocketReactClient:
             self.send_status_btn.config(state=tk.NORMAL)
             self.send_ping_btn.config(state=tk.NORMAL)
             self.send_route_btn.config(state=tk.NORMAL)
+            self.send_location_update_btn.config(state=tk.NORMAL)
             self.hold_btn.config(state=tk.NORMAL)
         else:
             self.status_label.config(text="Not Connected", foreground="red")
@@ -794,6 +835,7 @@ class WebSocketReactClient:
             self.send_status_btn.config(state=tk.DISABLED)
             self.send_ping_btn.config(state=tk.DISABLED)
             self.send_route_btn.config(state=tk.DISABLED)
+            self.send_location_update_btn.config(state=tk.DISABLED)
             self.hold_btn.config(state=tk.DISABLED)
             # Stop auto-increment if running
             self.stop_auto_increment()
