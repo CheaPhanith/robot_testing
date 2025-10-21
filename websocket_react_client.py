@@ -149,9 +149,15 @@ class WebSocketReactClient:
         self.lng_entry = ttk.Entry(send_frame, textvariable=self.lng_var, width=15)
         self.lng_entry.grid(row=1, column=1, sticky=tk.W, pady=(0, 5))
         
+        # Icon Type input
+        ttk.Label(send_frame, text="Icon Type:").grid(row=2, column=0, sticky=tk.W, padx=(0, 10), pady=(0, 5))
+        self.icon_type_var = tk.StringVar(value="A")
+        self.icon_type_entry = ttk.Entry(send_frame, textvariable=self.icon_type_var, width=15)
+        self.icon_type_entry.grid(row=2, column=1, sticky=tk.W, pady=(0, 5))
+        
         # Buttons frame
         buttons_frame = ttk.Frame(send_frame)
-        buttons_frame.grid(row=2, column=0, columnspan=2, pady=(10, 0))
+        buttons_frame.grid(row=3, column=0, columnspan=2, pady=(10, 0))
         
         # Send location button
         self.send_location_btn = ttk.Button(buttons_frame, text="Send Location", command=self.send_location, state=tk.DISABLED)
@@ -173,9 +179,13 @@ class WebSocketReactClient:
         self.send_location_update_btn = ttk.Button(buttons_frame, text="Send Location Update", command=self.send_location_update, state=tk.DISABLED)
         self.send_location_update_btn.pack(side=tk.LEFT, padx=(0, 10))
         
+        # Send icon pin button
+        self.send_icon_pin_btn = ttk.Button(buttons_frame, text="Send Icon Pin", command=self.send_icon_pin, state=tk.DISABLED)
+        self.send_icon_pin_btn.pack(side=tk.LEFT, padx=(0, 10))
+        
         # Quick location buttons
         quick_frame = ttk.Frame(send_frame)
-        quick_frame.grid(row=3, column=0, columnspan=2, pady=(10, 0))
+        quick_frame.grid(row=4, column=0, columnspan=2, pady=(10, 0))
         
         ttk.Label(quick_frame, text="Quick Locations:").pack(side=tk.LEFT, padx=(0, 10))
         ttk.Button(quick_frame, text="San Francisco", command=lambda: self.set_location(37.7749, -122.4194)).pack(side=tk.LEFT, padx=(0, 5))
@@ -608,8 +618,9 @@ class WebSocketReactClient:
         self.log_message("SENT", f"🗺️ Sent route waypoints (10 stops)")
         
     def send_location_update(self):
-        """Send location update in the specified format"""
+        """Send location update in the specified format using current input values"""
         try:
+            # Get values from input fields
             lat = float(self.lat_var.get())
             lng = float(self.lng_var.get())
             
@@ -621,27 +632,65 @@ class WebSocketReactClient:
                 self.update_direction_label()
                 self.log_message("INFO", f"🧭 Direction auto-calculated: {self.current_direction:.1f}°")
             
-            # Create location update message in the specified format
+            # Create location update message using current input values
             location_update_message = {
                 "type": "location_track",
                 "data": {
-                    "lat": lat,
-                    "lng": lng,
-                    "timestamp": datetime.now().isoformat() + "Z",
-                    "direction": self.current_direction
+                    "lat": lat,                    # From latitude input field
+                    "lng": lng,                    # From longitude input field
+                    "direction": self.current_direction,  # Current direction value
+                    "timestamp": datetime.now().isoformat() + "Z"
                 }
             }
             
             self.send_message(location_update_message)
             direction_source = "manual" if self.manual_direction_set else "auto-calculated"
-            self.log_message("SENT", f"📍 Sent location update: {lat}, {lng} (direction: {self.current_direction:.1f}° - {direction_source})")
+            self.log_message("SENT", f"📍 Sent location update: lat={lat}, lng={lng}, direction={self.current_direction:.1f}° ({direction_source})")
             
             # Store current location for next direction calculation
             self.last_lat = lat
             self.last_lng = lng
             
-        except ValueError:
+        except ValueError as e:
+            self.log_message("ERROR", f"❌ Invalid input values - lat: '{self.lat_var.get()}', lng: '{self.lng_var.get()}'")
             messagebox.showerror("Invalid Input", "Please enter valid latitude and longitude numbers")
+        except Exception as e:
+            self.log_message("ERROR", f"❌ Error sending location update: {e}")
+            messagebox.showerror("Error", f"Failed to send location update: {e}")
+            
+    def send_icon_pin(self):
+        """Send icon pin message using current input values"""
+        try:
+            # Get values from input fields
+            lat = float(self.lat_var.get())
+            lng = float(self.lng_var.get())
+            icon_type = self.icon_type_var.get().strip()
+            
+            # Validate icon type is not empty
+            if not icon_type:
+                self.log_message("ERROR", "❌ Icon Type cannot be empty")
+                messagebox.showerror("Invalid Input", "Please enter an icon type")
+                return
+            
+            # Create icon pin message using current input values
+            icon_pin_message = {
+                "type": "icon_pin",
+                "data": {
+                    "lat": lat,                    # From latitude input field
+                    "lng": lng,                    # From longitude input field
+                    "type": icon_type          # From icon type input field
+                }
+            }
+            
+            self.send_message(icon_pin_message)
+            self.log_message("SENT", f"📍 Sent icon pin: lat={lat}, lng={lng}, iconType={icon_type}")
+            
+        except ValueError as e:
+            self.log_message("ERROR", f"❌ Invalid input values - lat: '{self.lat_var.get()}', lng: '{self.lng_var.get()}'")
+            messagebox.showerror("Invalid Input", "Please enter valid latitude and longitude numbers")
+        except Exception as e:
+            self.log_message("ERROR", f"❌ Error sending icon pin: {e}")
+            messagebox.showerror("Error", f"Failed to send icon pin: {e}")
         
     def send_message(self, message):
         """Send message to WebSocket server"""
@@ -825,6 +874,7 @@ class WebSocketReactClient:
             self.send_ping_btn.config(state=tk.NORMAL)
             self.send_route_btn.config(state=tk.NORMAL)
             self.send_location_update_btn.config(state=tk.NORMAL)
+            self.send_icon_pin_btn.config(state=tk.NORMAL)
             self.hold_btn.config(state=tk.NORMAL)
         else:
             self.status_label.config(text="Not Connected", foreground="red")
@@ -836,6 +886,7 @@ class WebSocketReactClient:
             self.send_ping_btn.config(state=tk.DISABLED)
             self.send_route_btn.config(state=tk.DISABLED)
             self.send_location_update_btn.config(state=tk.DISABLED)
+            self.send_icon_pin_btn.config(state=tk.DISABLED)
             self.hold_btn.config(state=tk.DISABLED)
             # Stop auto-increment if running
             self.stop_auto_increment()
